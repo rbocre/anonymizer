@@ -1,0 +1,14 @@
+services:
+  anonymizer:
+    build: .
+    container_name: anonymizer
+    ports:
+      - "8800:8800"
+    env_file:
+      - .env
+    volumes:
+      - anonymizer-data:/data
+    restart: unless-stopped
+
+volumes:
+  anonymizer-data:

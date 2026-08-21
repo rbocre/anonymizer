@@ -1,0 +1,8 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+httpx>=0.27
+presidio-analyzer>=2.2.355
+spacy>=3.7
+langdetect>=1.0.9
+HanTa>=1.1
+gliner2>=1.3
