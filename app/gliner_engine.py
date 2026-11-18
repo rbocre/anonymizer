@@ -96,17 +96,17 @@ def _chunks(text: str):
     if len(text) <= GLINER_MAX_CHUNK:
         yield 0, text
         return
-    offset = 0
-    current = ""
-    for part in _SENT_SPLIT.split(text):
-        if current and len(current) + len(part) + 1 > GLINER_MAX_CHUNK:
-            yield offset, current
-            offset = text.index(current, offset) + len(current)
-            current = part
-        else:
-            current = f"{current} {part}".strip() if current else part
-    if current:
-        yield text.rindex(current), current
+    # Stücke direkt per Position aus dem Originaltext schneiden, damit Offsets
+    # exakt stimmen (Whitespace wie "\n\n" zwischen Sätzen bleibt erhalten).
+    bounds = [m.end() for m in _SENT_SPLIT.finditer(text)] + [len(text)]
+    start = prev = 0
+    for end in bounds:
+        if end - start > GLINER_MAX_CHUNK and prev > start:
+            yield start, text[start:prev]
+            start = prev
+        prev = end
+    if start < len(text):
+        yield start, text[start:]
 
 
 def _iter_entities(raw: dict):

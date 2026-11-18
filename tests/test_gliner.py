@@ -60,6 +60,22 @@ def test_chunking_offsets():
     print(f"PASS test_chunking_offsets ({len(ge._model.calls)} Chunks)")
 
 
+def test_chunking_newlines():
+    """Regression: Sätze getrennt durch '\\n\\n' (z.B. System-Prompt von Jan)
+    führten zu 'ValueError: substring not found'."""
+    ge._model = FakeGLiNER()
+    filler = "Du bist ein hilfreicher Assistent.\n\n- Regel eins.\n  " * 60
+    text = filler + "Am Ende steht Anna Meier."
+    chunks = list(ge._chunks(text))
+    assert len(chunks) > 1
+    for off, chunk in chunks:
+        assert text[off : off + len(chunk)] == chunk
+    assert "".join(c for _, c in chunks) == text  # lückenlos
+    hits = [text[r.start : r.end] for r in ge.analyze(text)]
+    assert "Anna Meier" in hits, hits
+    print(f"PASS test_chunking_newlines ({len(chunks)} Chunks)")
+
+
 def test_full_anonymize_with_patterns():
     """GLiNER (Fake) + Presidio-Pattern (echt, blank-Engine) im Zusammenspiel."""
     ge._model = FakeGLiNER()
@@ -96,6 +112,7 @@ def test_ignore_words():
 if __name__ == "__main__":
     test_analyze_mapping()
     test_chunking_offsets()
+    test_chunking_newlines()
     test_full_anonymize_with_patterns()
     test_ignore_words()
     print("\nALLE GLINER-TESTS BESTANDEN")
