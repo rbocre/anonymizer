@@ -177,6 +177,8 @@ Nach Änderungen: `docker compose up -d` (bzw. `--build` bei Code-Änderungen).
 
 ## 11. Multi-User-Betrieb (Unterricht)
 
+Anleitung für Studierende: [ANLEITUNG-STUDIERENDE.md](ANLEITUNG-STUDIERENDE.md)
+
 Mit `MULTI_USER=true` wird der Anonymizer zu einer Übungsplattform: Jede Person definiert im Web-UI ihre **eigene Guardrail**, erhält einen eigenen Key (`ano_…`) für Jan oder OpenWebUI und sieht im eigenen Dashboard, was beim LLM ankommt. Der eigentliche LLM-Key liegt nur auf dem Server.
 
 ```
