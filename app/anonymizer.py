@@ -3,6 +3,7 @@
 import os
 import re
 import threading
+from dataclasses import dataclass
 
 from langdetect import DetectorFactory, detect
 
@@ -11,7 +12,8 @@ DetectorFactory.seed = 0
 DEFAULT_LANGUAGE = os.getenv("DEFAULT_LANGUAGE", "de")
 SCORE_THRESHOLD = float(os.getenv("SCORE_THRESHOLD", "0.4"))
 
-# NER-Engine: "gliner" (GLiNER2-PII-Modell, empfohlen) oder "spacy" (Presidio-NER)
+# NER-Engine: "gliner" (GLiNER2-PII-Modell, empfohlen), "spacy" (Presidio-NER)
+# oder "none" (nur Muster wie E-Mail/IBAN/Telefon + eigene Regeln, sehr leicht)
 NER_ENGINE = os.getenv("NER_ENGINE", "gliner").lower()
 ENTITIES = [
     e.strip()
@@ -36,6 +38,31 @@ NER_IGNORE_WORDS = {
 }
 
 _SENT_END = {".", "!", "?", ":", ";"}
+
+# Typen, die Presidio liefern kann (Pattern-Recognizer bzw. spaCy-NER)
+_PRESIDIO_TYPES = {
+    "PERSON",
+    "LOCATION",
+    "EMAIL_ADDRESS",
+    "PHONE_NUMBER",
+    "IBAN_CODE",
+    "CREDIT_CARD",
+    "IP_ADDRESS",
+    "AHV_NUMBER",
+}
+# Typen, die (auch) über GLiNER kommen
+_GLINER_TYPES = {
+    "PERSON",
+    "LOCATION",
+    "ADDRESS",
+    "DATE_OF_BIRTH",
+    "CREDENTIAL",
+    "EMAIL_ADDRESS",
+    "PHONE_NUMBER",
+    "IBAN_CODE",
+    "CREDIT_CARD",
+    "IP_ADDRESS",
+}
 
 _hanta = None
 
@@ -97,7 +124,7 @@ def _build_analyzer():
     )
     from presidio_analyzer.nlp_engine import NlpEngineProvider
 
-    if NER_ENGINE == "gliner":
+    if NER_ENGINE in ("gliner", "none"):
         nlp_engine = _blank_nlp_engine()
     else:
         nlp_engine = NlpEngineProvider(
@@ -151,35 +178,150 @@ def detect_language(text: str) -> str:
         return DEFAULT_LANGUAGE
 
 
-class AnonymizationSession:
-    """Konsistentes Mapping Original <-> Platzhalter über einen ganzen Request."""
+def ner_available() -> bool:
+    return NER_ENGINE in ("gliner", "spacy")
 
-    def __init__(self):
+
+class GuardrailBlocked(Exception):
+    """Eine Block-Regel hat angeschlagen; der Request darf nicht weiter."""
+
+    def __init__(self, rule: str, reason: str, message: str):
+        super().__init__(message)
+        self.rule = rule
+        self.reason = reason
+        self.message = message
+
+
+@dataclass
+class _Hit:
+    entity_type: str
+    start: int
+    end: int
+    score: float
+    action: str = "mask"  # mask | redact
+    replacement: str = ""
+    source: str = "builtin"  # builtin | rule
+
+
+class AnonymizationSession:
+    """Konsistentes Mapping Original <-> Platzhalter über einen ganzen Request.
+
+    Ohne config gelten die globalen Einstellungen aus der .env (Einzel-User-
+    Betrieb). Mit config (Multi-User) gelten Entitäten, Schwelle, Ignore-Liste
+    und eigene Regex-Regeln des jeweiligen Users."""
+
+    def __init__(self, config: dict | None = None):
         self.mapping: dict[str, str] = {}  # placeholder -> original
         self._reverse: dict[str, str] = {}  # original -> placeholder
         self._counters: dict[str, int] = {}
         self.entities: list[dict] = []
+        self.config = config
+        if config is None:
+            self.entity_types = list(ENTITIES)
+            self.threshold = SCORE_THRESHOLD
+            self.ignore_words = set(NER_IGNORE_WORDS)
+            self.rules = []
+            self.block_message = ""
+        else:
+            from .guardrail import compile_rules
+
+            self.entity_types = list(config.get("entities", []))
+            self.threshold = float(config.get("score_threshold", SCORE_THRESHOLD))
+            self.ignore_words = set(NER_IGNORE_WORDS) | {
+                w.lower() for w in config.get("ignore_words", [])
+            }
+            self.rules = compile_rules(config)
+            self.block_message = config.get("block_message", "")
+
+    # ------------------------------------------------------------ rules
+
+    def _rule_hits(self, text: str) -> list[_Hit]:
+        from .guardrail import REGEX_TIMEOUT
+
+        hits = []
+        for rule, pat in self.rules:
+            try:
+                matches = list(pat.finditer(text, timeout=REGEX_TIMEOUT))
+            except TimeoutError:
+                # fail-closed: eine zu langsame Regel blockiert statt durchzulassen
+                raise GuardrailBlocked(
+                    rule["name"],
+                    "timeout",
+                    f"Regel {rule['name']} war zu langsam (Timeout) – Anfrage blockiert.",
+                )
+            for m in matches:
+                if m.end() <= m.start():
+                    continue
+                if rule["action"] == "block":
+                    self.entities.append(
+                        {
+                            "type": rule["name"],
+                            "original": m.group(0),
+                            "placeholder": "BLOCK",
+                            "score": 1.0,
+                            "lang": "",
+                            "source": "rule",
+                            "action": "block",
+                        }
+                    )
+                    raise GuardrailBlocked(
+                        rule["name"],
+                        "match",
+                        self.block_message or f"Blockiert durch Regel {rule['name']}.",
+                    )
+                hits.append(
+                    _Hit(
+                        rule["name"],
+                        m.start(),
+                        m.end(),
+                        2.0,  # eigene Regeln gewinnen bei Überlappung
+                        rule["action"],
+                        rule.get("replacement", "[ENTFERNT]"),
+                        "rule",
+                    )
+                )
+        return hits
+
+    # ------------------------------------------------------------ builtin
+
+    def _builtin_hits(self, text: str, lang: str) -> list[_Hit]:
+        types = set(self.entity_types)
+        if not types:
+            return []
+        presidio_types = [t for t in self.entity_types if t in _PRESIDIO_TYPES]
+        if NER_ENGINE != "spacy":
+            presidio_types = [t for t in presidio_types if t not in NER_TYPES]
+        results = []
+        if presidio_types:
+            results = get_analyzer().analyze(text=text, language=lang, entities=presidio_types)
+            results = [r for r in results if r.score >= self.threshold]
+        if NER_ENGINE == "gliner" and (self.config is None or types & _GLINER_TYPES):
+            # GLiNER2 übernimmt das NER; Presidio liefert nur Pattern-Treffer
+            # (blank-Engine hat kein NER). Kontextmodell -> keine HanTa-Filter nötig.
+            # Einzel-User-Betrieb: alle GLiNER-Labels wie bisher; Multi-User:
+            # nur die vom User gewählten Typen.
+            from . import gliner_engine
+
+            results += [
+                r
+                for r in gliner_engine.analyze(text)
+                if self.config is None or r.entity_type in types
+            ]
+        elif NER_ENGINE == "spacy":
+            results = self._filter_ner_false_positives(text, lang, results)
+        if self.ignore_words:
+            results = [
+                r for r in results if text[r.start : r.end].strip().lower() not in self.ignore_words
+            ]
+        return [_Hit(r.entity_type, r.start, r.end, r.score) for r in results]
+
+    # ------------------------------------------------------------ main
 
     def anonymize(self, text: str) -> str:
         if not text or not text.strip():
             return text
         lang = detect_language(text)
-        results = get_analyzer().analyze(text=text, language=lang, entities=ENTITIES)
-        results = [r for r in results if r.score >= SCORE_THRESHOLD]
-        if NER_ENGINE == "gliner":
-            # GLiNER2 übernimmt das NER; Presidio liefert nur Pattern-Treffer
-            # (blank-Engine hat kein NER). Kontextmodell -> keine HanTa-Filter nötig.
-            from . import gliner_engine
-
-            results += gliner_engine.analyze(text)
-            if NER_IGNORE_WORDS:
-                results = [
-                    r
-                    for r in results
-                    if text[r.start : r.end].strip().lower() not in NER_IGNORE_WORDS
-                ]
-        else:
-            results = self._filter_ner_false_positives(text, lang, results)
+        results = self._rule_hits(text) + self._builtin_hits(text, lang)
         # Überlappungen: höherer Score gewinnt, dann längerer Treffer
         results.sort(key=lambda r: (-r.score, -(r.end - r.start)))
         chosen = []
@@ -192,6 +334,20 @@ class AnonymizationSession:
         for r in chosen:
             original = text[r.start : r.end]
             key = original.strip()
+            if r.action == "redact":
+                self.entities.append(
+                    {
+                        "type": r.entity_type,
+                        "original": key,
+                        "placeholder": r.replacement,
+                        "score": 1.0,
+                        "lang": lang,
+                        "source": r.source,
+                        "action": "redact",
+                    }
+                )
+                out = out[: r.start] + r.replacement + out[r.end :]
+                continue
             if key in self._reverse:
                 placeholder = self._reverse[key]
             else:
@@ -205,8 +361,10 @@ class AnonymizationSession:
                         "type": r.entity_type,
                         "original": key,
                         "placeholder": placeholder,
-                        "score": round(r.score, 2),
+                        "score": round(min(r.score, 1.0), 2),
                         "lang": lang,
+                        "source": r.source,
+                        "action": "mask",
                     }
                 )
             out = out[: r.start] + placeholder + out[r.end :]
@@ -216,6 +374,7 @@ class AnonymizationSession:
         """Verwirft NER-Treffer, die keine Namen sind (z.B. Verben am Satzanfang)."""
         if not NER_REQUIRE_PROPN or not any(r.entity_type in NER_TYPES for r in results):
             return results
+        NER_IGNORE_WORDS = self.ignore_words
         nlp = get_analyzer().nlp_engine.nlp.get(lang)
         if nlp is None:
             return results

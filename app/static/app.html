@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anonymizer – Meine Guardrail</title>
+<link rel="stylesheet" href="/static/common.css">
+</head>
+<body>
+<header>
+  <h1>🛡️ Anonymizer</h1>
+  <span class="sub">Jan → <b>deine Guardrail</b> → LLM</span>
+  <div class="right" id="who"></div>
+</header>
+<nav class="tabs" id="tabs" style="display:none">
+  <button data-tab="guard" class="active">Guardrail</button>
+  <button data-tab="log">Meine Requests</button>
+  <button data-tab="setup">Einrichtung (Jan)</button>
+</nav>
+<div id="view"></div>
+
+<script src="/static/common.js"></script>
+<script>
+let PTEXT = 'Hallo, ich bin Anna Muster, erreichbar unter anna.muster@example.ch oder 079 123 45 67. Meine Kundennummer ist KD-123456.';
+let INFO = null, KEY = store.get('ano_key'), ME = null, CFG = null, TAB = 'guard', SELECTED = null, logTimer = null;
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: { 'Content-Type': 'application/json', ...(KEY ? { Authorization: 'Bearer ' + KEY } : {}), ...(opts.headers || {}) } });
+  let data = null; try { data = await r.json(); } catch (e) {}
+  if (!r.ok) throw new Error(data?.detail || data?.error?.message || ('HTTP ' + r.status));
+  return data;
+}
+
+// ---------------------------------------------------------------- Login
+function showLogin(msg) {
+  document.getElementById('tabs').style.display = 'none';
+  document.getElementById('who').innerHTML = '';
+  document.getElementById('view').innerHTML = `
+  <div class="center">
+    ${msg ? `<div class="msgbox err">${esc(msg)}</div>` : ''}
+    <div class="card"><h3>Anmelden mit deinem Key</h3>
+      <input id="lkey" placeholder="ano_…" autocomplete="off">
+      <button class="primary" onclick="login()">Anmelden</button>
+    </div>
+    ${INFO.registration_open ? `
+    <div class="card"><h3>Neu hier? Zugang erstellen</h3>
+      <label>Name (wird im Kurs angezeigt)</label><input id="rname" maxlength="40">
+      <label>Kurs-Code</label><input id="rcode" autocomplete="off">
+      <button class="primary" onclick="register()">Zugang erstellen</button>
+      <div id="rmsg"></div>
+    </div>` : '<p class="hint">Einen Key erhältst du von deiner Lehrperson.</p>'}
+  </div>`;
+}
+
+async function login(key) {
+  KEY = (key || document.getElementById('lkey')?.value || '').trim();
+  try {
+    ME = await api('/api/me');
+    store.set('ano_key', KEY);
+    CFG = structuredClone(ME.config);
+    document.getElementById('who').innerHTML = `<span class="hint">${esc(ME.name)} · ${esc(ME.key_hint)}</span><button onclick="logout()">Abmelden</button>`;
+    document.getElementById('tabs').style.display = '';
+    showTab(TAB);
+  } catch (e) { KEY = null; store.del('ano_key'); showLogin(e.message); }
+}
+
+async function register() {
+  const box = document.getElementById('rmsg');
+  try {
+    const r = await api('/api/register', { method: 'POST', body: JSON.stringify({ name: rname.value, code: rcode.value }) });
+    document.getElementById('view').innerHTML = `
+      <div class="center"><div class="card"><h3>Dein Zugang ist bereit</h3>
+        <p>Das ist dein persönlicher Key. <b>Er wird nur jetzt angezeigt</b>: kopiere ihn und bewahre ihn gut auf.</p>
+        <div class="keybox" id="newkey">${esc(r.key)}</div>
+        <button onclick="copyText('${esc(r.key)}').then(ok => this.textContent = ok ? 'Kopiert ✓' : 'Bitte manuell kopieren')">Kopieren</button>
+        <button class="primary" onclick="login('${esc(r.key)}')">Weiter</button>
+      </div></div>`;
+  } catch (e) { box.innerHTML = `<div class="msgbox err">${esc(e.message)}</div>`; }
+}
+
+function logout() { KEY = null; ME = null; store.del('ano_key'); clearInterval(logTimer); showLogin(); }
+
+// ---------------------------------------------------------------- Tabs
+document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+function showTab(t) {
+  TAB = t; clearInterval(logTimer);
+  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === t));
+  ({ guard: renderGuard, log: renderLog, setup: renderSetup })[t]();
+}
+
+// ---------------------------------------------------------------- Guardrail-Editor
+function renderGuard() {
+  const ents = INFO.entities.map(e => {
+    const on = e.available && CFG.entities.includes(e.type);
+    return `<label class="${e.available ? '' : 'off'}" title="${e.available ? '' : 'Auf diesem Server nicht verfügbar (NER-Modell aus)'}">
+      <input type="checkbox" ${on ? 'checked' : ''} ${e.available ? '' : 'disabled'} onchange="toggleEnt('${e.type}', this.checked)">
+      ${esc(e.label)} <span class="hint">${e.type}</span></label>`;
+  }).join('');
+  document.getElementById('view').innerHTML = `
+  <div class="page grid2">
+    <div>
+      <div class="card"><h3>1. Eingebaute Erkennung</h3>
+        <p class="hint" style="margin-bottom:8px">Welche Arten von Personendaten sollen maskiert werden?</p>
+        <div class="checks">${ents}</div>
+        <div style="margin-top:12px"><label>Mindest-Score: <b id="thrv">${CFG.score_threshold}</b></label>
+          <input type="range" min="0" max="1" step="0.05" value="${CFG.score_threshold}" style="width:200px;vertical-align:middle"
+            oninput="CFG.score_threshold=+this.value; thrv.textContent=this.value; dirty()">
+          <span class="hint">höher = weniger, dafür sicherere Treffer</span></div>
+      </div>
+      <div class="card"><h3>2. Eigene Regeln (Regex)</h3>
+        <p class="hint" style="margin-bottom:8px"><b>maskieren</b>: Platzhalter, die Antwort wird zurückübersetzt ·
+          <b>entfernen</b>: fester Ersatztext · <b>blockieren</b>: Anfrage wird abgelehnt und erreicht das LLM nie.</p>
+        <div id="rules"></div>
+        <button onclick="addRule()" ${CFG.rules.length >= INFO.max_rules ? 'disabled' : ''}>+ Regel hinzufügen</button>
+      </div>
+      <div class="card"><h3>3. Ausnahmen und Meldung</h3>
+        <label>Wörter, die nie maskiert werden (kommagetrennt)</label>
+        <textarea rows="2" oninput="CFG.ignore_words=this.value.split(',').map(s=>s.trim()).filter(Boolean); dirty()">${esc(CFG.ignore_words.join(', '))}</textarea>
+        <label style="display:block;margin-top:8px">Meldung bei Blockierung (sieht man in Jan)</label>
+        <input style="width:100%" value="${esc(CFG.block_message)}" oninput="CFG.block_message=this.value; dirty()">
+      </div>
+      <button class="primary" id="savebtn" onclick="save()">Guardrail speichern</button>
+      <span id="savemsg"></span>
+    </div>
+    <div>
+      <div class="card"><h3>Testfeld</h3>
+        <p class="hint" style="margin-bottom:8px">Probiere deine Regeln aus, ohne das LLM aufzurufen. Es gilt der aktuelle Stand im Editor, auch wenn er noch nicht gespeichert ist.</p>
+        <textarea id="ptext" rows="6" oninput="PTEXT=this.value; schedulePreview()">${esc(PTEXT)}</textarea>
+        <h2>Das sieht das LLM</h2>
+        <pre class="out" id="pout"></pre>
+        <div id="pents" style="margin-top:10px"></div>
+      </div>
+    </div>
+  </div>`;
+  renderRules(); preview();
+}
+
+function toggleEnt(t, on) {
+  CFG.entities = on ? [...new Set([...CFG.entities, t])] : CFG.entities.filter(x => x !== t);
+  dirty();
+}
+
+function renderRules() {
+  const el = document.getElementById('rules');
+  if (!CFG.rules.length) { el.innerHTML = '<p class="empty" style="margin-bottom:8px">Noch keine eigenen Regeln.</p>'; return; }
+  el.innerHTML = CFG.rules.map((r, i) => `
+    <div class="rule">
+      <input type="text" placeholder="NAME" value="${esc(r.name)}" title="Grossbuchstaben und _, z. B. KUNDENNUMMER"
+        oninput="this.value=this.value.toUpperCase().replace(/[^A-Z_]/g,''); CFG.rules[${i}].name=this.value; dirty()">
+      <input type="text" placeholder="Regex, z. B. KD-\\d{6}" value="${esc(r.pattern)}" style="font-family:ui-monospace,monospace"
+        oninput="CFG.rules[${i}].pattern=this.value; dirty()">
+      <select onchange="CFG.rules[${i}].action=this.value; renderRules(); dirty()">
+        ${['mask','redact','block'].map(a => `<option value="${a}" ${r.action === a ? 'selected' : ''}>${({mask:'maskieren',redact:'entfernen',block:'blockieren'})[a]}</option>`).join('')}
+      </select>
+      <div class="row2">
+        <label><input type="checkbox" ${r.enabled !== false ? 'checked' : ''} onchange="CFG.rules[${i}].enabled=this.checked; dirty()"> aktiv</label>
+        <label><input type="checkbox" ${r.ignore_case ? 'checked' : ''} onchange="CFG.rules[${i}].ignore_case=this.checked; dirty()"> Gross-/Kleinschreibung ignorieren</label>
+        ${r.action === 'redact' ? `<label>Ersatz <input value="${esc(r.replacement || '[ENTFERNT]')}" style="width:130px" oninput="CFG.rules[${i}].replacement=this.value; dirty()"></label>` : ''}
+        <button class="danger" style="margin-left:auto" onclick="CFG.rules.splice(${i},1); renderGuard(); dirty()">Löschen</button>
+      </div>
+    </div>`).join('');
+}
+
+function addRule() {
+  CFG.rules.push({ name: 'REGEL_' + 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[CFG.rules.length % 26], pattern: '', action: 'mask', ignore_case: false, enabled: true, replacement: '[ENTFERNT]' });
+  renderGuard();
+}
+
+let pTimer = null;
+function dirty() { document.getElementById('savemsg').innerHTML = '<span class="hint"> ungespeicherte Änderungen</span>'; schedulePreview(); }
+function schedulePreview() { clearTimeout(pTimer); pTimer = setTimeout(preview, 400); }
+
+function cfgForSend() {
+  // leere Regeln (noch kein Muster) beim Testen ignorieren
+  return { ...CFG, rules: CFG.rules.filter(r => r.pattern) };
+}
+
+async function preview() {
+  const out = document.getElementById('pout'), ents = document.getElementById('pents');
+  if (!out) return;
+  try {
+    const r = await api('/api/me/preview', { method: 'POST', body: JSON.stringify({ text: ptext.value, config: cfgForSend() }) });
+    if (r.blocked) {
+      out.innerHTML = `<span style="color:var(--warn)">⛔ Blockiert durch ${esc(r.rule)}${r.reason === 'timeout' ? ' (Timeout: Regex zu langsam)' : ''}</span>\nMeldung in Jan: ${esc(r.message)}`;
+      ents.innerHTML = '';
+    } else { out.innerHTML = hl(r.anonymized, r.entities); ents.innerHTML = entityTable(r.entities); }
+  } catch (e) { out.innerHTML = `<span style="color:var(--err)">${esc(e.message)}</span>`; ents.innerHTML = ''; }
+}
+
+async function save() {
+  const m = document.getElementById('savemsg');
+  try {
+    const r = await api('/api/me/guardrail', { method: 'PUT', body: JSON.stringify(cfgForSend()) });
+    CFG = structuredClone(r.config); ME.config = r.config;
+    renderGuard();
+    document.getElementById('savemsg').innerHTML = '<span class="msgbox ok" style="display:inline-block;margin-left:8px">Gespeichert. Gilt ab dem nächsten Request.</span>';
+  } catch (e) { m.innerHTML = `<div class="msgbox err">${esc(e.message)}</div>`; }
+}
+
+// ---------------------------------------------------------------- Requests
+function renderLog() {
+  document.getElementById('view').innerHTML = `
+    <div style="display:flex;gap:8px;padding:8px 16px;border-bottom:1px solid var(--border);align-items:center">
+      <span class="hint">Nur deine eigenen Requests${INFO.log_retention_days > 0 ? ` · werden nach ${INFO.log_retention_days} Tagen gelöscht` : ''}</span>
+      <button class="danger" style="margin-left:auto" onclick="clearLog()">Meine Requests löschen</button></div>
+    <div class="logwrap"><div class="loglist" id="list"></div>
+      <div class="logdetail" id="detail"><p class="placeholder-msg">Request auswählen …</p></div></div>`;
+  loadList(); logTimer = setInterval(loadList, 3000);
+  if (SELECTED) showReq(SELECTED);
+}
+async function loadList() {
+  try { const items = await api('/api/me/requests'); const el = document.getElementById('list'); if (el) el.innerHTML = renderLogList(items, SELECTED, 'showReq', false); } catch (e) {}
+}
+async function showReq(id) {
+  SELECTED = id;
+  try { const d = await api('/api/me/requests/' + id); document.getElementById('detail').innerHTML = renderLogDetail(d); loadList(); } catch (e) {}
+}
+async function clearLog() {
+  if (!confirm('Alle deine Requests löschen?')) return;
+  await api('/api/me/requests', { method: 'DELETE' }); SELECTED = null; renderLog();
+}
+
+// ---------------------------------------------------------------- Einrichtung
+function renderSetup() {
+  const base = location.origin + '/v1';
+  document.getElementById('view').innerHTML = `
+  <div class="page" style="max-width:820px">
+    <div class="card"><h3>Jan einrichten</h3>
+      <ol class="steps">
+        <li>In Jan: <b>Settings → Model Providers</b> → neuen OpenAI-kompatiblen Provider hinzufügen.</li>
+        <li><b>Base URL:</b> <code>${esc(base)}</code> <button onclick="copyText('${esc(base)}')">Kopieren</button></li>
+        <li><b>API Key:</b> dein Key (<code>${esc(ME.key_hint)}</code>). Er wurde dir bei der Registrierung einmal angezeigt.</li>
+        <li>Modelle laden bzw. eines der Modelle unten eintragen und einen Chat starten.</li>
+        <li>Im Tab <b>Meine Requests</b> siehst du danach, was beim LLM angekommen ist.</li>
+      </ol>
+    </div>
+    <div class="card"><h3>Verfügbare Modelle</h3><div id="models"><p class="hint">Lade …</p></div></div>
+    <div class="card"><h3>Gut zu wissen</h3>
+      <ul class="steps" style="padding-left:20px">
+        <li>Verwende nur <b>erfundene Testdaten</b>: Deine Eingaben werden im Klartext protokolliert, damit du den Vergleich siehst.</li>
+        <li>Limit: ${INFO.rate_limit_per_minute > 0 ? INFO.rate_limit_per_minute + ' Anfragen pro Minute' : 'keins'}.</li>
+        <li>Key verloren? Deine Lehrperson kann einen neuen erzeugen; deine Guardrail bleibt erhalten.</li>
+      </ul>
+    </div>
+  </div>`;
+  api('/v1/models').then(d => {
+    const ids = (d.data || []).map(m => m.id);
+    document.getElementById('models').innerHTML = ids.length ? ids.map(i => `<code>${esc(i)}</code>`).join(' ') : '<p class="empty">Keine Modelle gefunden.</p>';
+  }).catch(e => document.getElementById('models').innerHTML = `<div class="msgbox err">${esc(e.message)}</div>`);
+}
+
+// ---------------------------------------------------------------- Start
+(async () => {
+  INFO = await (await fetch('/api/info')).json();
+  if (KEY) login(KEY); else showLogin();
+})();
+</script>
+</body>
+</html>
