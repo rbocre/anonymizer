@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anonymizer – Admin</title>
+<link rel="stylesheet" href="/static/common.css">
+</head>
+<body>
+<header>
+  <h1>🛡️ Anonymizer · Admin</h1>
+  <span class="sub">Multi-User-Betrieb</span>
+  <div class="right" id="who"></div>
+</header>
+<nav class="tabs" id="tabs" style="display:none">
+  <button data-tab="users" class="active">User</button>
+  <button data-tab="log">Alle Requests</button>
+</nav>
+<div id="view"></div>
+
+<script src="/static/common.js"></script>
+<script>
+let TOKEN = new URLSearchParams(location.search).get('token') || store.get('ano_admin'), TAB = 'users', SELECTED = null, FILTER = '', logTimer = null, USERS = [];
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: { 'Content-Type': 'application/json', 'x-admin-token': TOKEN || '', ...(opts.headers || {}) } });
+  let data = null; try { data = await r.json(); } catch (e) {}
+  if (!r.ok) throw new Error(data?.detail || ('HTTP ' + r.status));
+  return data;
+}
+
+function showLogin(msg) {
+  document.getElementById('tabs').style.display = 'none';
+  document.getElementById('view').innerHTML = `<div class="center">
+    ${msg ? `<div class="msgbox err">${esc(msg)}</div>` : ''}
+    <div class="card"><h3>Admin-Token</h3><input id="tok" type="password">
+      <button class="primary" onclick="login(tok.value)">Anmelden</button></div></div>`;
+}
+async function login(t) {
+  TOKEN = t;
+  try {
+    USERS = await api('/api/admin/users');
+    store.set('ano_admin', TOKEN);
+    if (location.search.includes('token=')) history.replaceState(null, '', location.pathname);
+    document.getElementById('who').innerHTML = `<button onclick="logout()">Abmelden</button>`;
+    document.getElementById('tabs').style.display = '';
+    showTab(TAB);
+  } catch (e) { store.del('ano_admin'); showLogin(e.message); }
+}
+function logout() { store.del('ano_admin'); TOKEN = null; clearInterval(logTimer); showLogin(); }
+
+document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+function showTab(t) {
+  TAB = t; clearInterval(logTimer);
+  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === t));
+  ({ users: renderUsers, log: renderLog })[t]();
+}
+
+// ---------------------------------------------------------------- User
+async function renderUsers(keyMsg) {
+  USERS = await api('/api/admin/users');
+  document.getElementById('view').innerHTML = `<div class="page">
+    ${keyMsg || ''}
+    <div class="card"><h3>User anlegen</h3>
+      <input id="nname" placeholder="Name" maxlength="40"> <button class="primary" onclick="createUser()">Anlegen</button>
+      <span class="hint">Alternativ registrieren sich Studierende selbst mit dem Kurs-Code (REGISTRATION_CODE).</span>
+    </div>
+    <div class="card"><h3>User (${USERS.length})</h3>
+      ${USERS.length ? `<table><tr><th>Name</th><th>Key</th><th>Erstellt</th><th>Zuletzt aktiv</th><th>Requests</th><th>Regeln</th><th>Status</th><th></th></tr>
+        ${USERS.map(u => `<tr>
+          <td><b>${esc(u.name)}</b></td><td><code>${esc(u.key_hint)}</code></td>
+          <td>${fmtTime(u.created)}</td><td>${fmtTime(u.last_used)}</td>
+          <td><a href="#" onclick="FILTER='${u.id}'; showTab('log'); return false">${u.request_count}</a></td>
+          <td>${(u.config?.rules || []).length}</td>
+          <td>${u.active ? '<span class="badge ok">aktiv</span>' : '<span class="badge error">gesperrt</span>'}</td>
+          <td style="white-space:nowrap">
+            <button onclick="setActive('${u.id}', ${!u.active})">${u.active ? 'Sperren' : 'Entsperren'}</button>
+            <button onclick="regen('${u.id}')">Neuer Key</button>
+            <button class="danger" onclick="delUser('${u.id}')">Löschen</button>
+          </td></tr>`).join('')}</table>` : '<p class="empty">Noch keine User.</p>'}
+    </div></div>`;
+}
+function keyBox(name, key) {
+  return `<div class="card"><h3>Key für ${esc(name)}</h3>
+    <p>Wird nur jetzt angezeigt. Weitergeben und danach dieses Fenster schliessen.</p>
+    <div class="keybox">${esc(key)}</div>
+    <button onclick="copyText('${esc(key)}').then(ok => this.textContent = ok ? 'Kopiert ✓' : 'Bitte manuell kopieren')">Kopieren</button></div>`;
+}
+async function createUser() {
+  try { const r = await api('/api/admin/users', { method: 'POST', body: JSON.stringify({ name: nname.value }) }); renderUsers(keyBox(r.user.name, r.key)); }
+  catch (e) { renderUsers(`<div class="msgbox err">${esc(e.message)}</div>`); }
+}
+async function setActive(id, active) { await api('/api/admin/users/' + id, { method: 'PATCH', body: JSON.stringify({ active }) }); renderUsers(); }
+const uname = id => USERS.find(u => u.id === id)?.name || '?';
+async function regen(id) {
+  const name = uname(id);
+  if (!confirm(`Neuen Key für ${name} erzeugen? Der alte Key funktioniert danach nicht mehr.`)) return;
+  const r = await api(`/api/admin/users/${id}/regenerate`, { method: 'POST' }); renderUsers(keyBox(name, r.key));
+}
+async function delUser(id) {
+  const name = uname(id);
+  if (!confirm(`${name} und alle Requests löschen?`)) return;
+  await api('/api/admin/users/' + id, { method: 'DELETE' }); renderUsers();
+}
+
+// ---------------------------------------------------------------- Requests
+function renderLog() {
+  document.getElementById('view').innerHTML = `
+    <div style="display:flex;gap:8px;padding:8px 16px;border-bottom:1px solid var(--border);align-items:center">
+      <select onchange="FILTER=this.value; SELECTED=null; loadList()">
+        <option value="">Alle User</option>
+        ${USERS.map(u => `<option value="${u.id}" ${FILTER === u.id ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}
+      </select>
+      <button class="danger" style="margin-left:auto" onclick="clearAll()">Alle Requests löschen</button></div>
+    <div class="logwrap"><div class="loglist" id="list"></div>
+      <div class="logdetail" id="detail"><p class="placeholder-msg">Request auswählen …</p></div></div>`;
+  loadList(); logTimer = setInterval(loadList, 3000);
+}
+async function loadList() {
+  try {
+    const items = await api('/api/admin/requests' + (FILTER ? '?user_id=' + encodeURIComponent(FILTER) : ''));
+    const el = document.getElementById('list'); if (el) el.innerHTML = renderLogList(items, SELECTED, 'showReq', true);
+  } catch (e) {}
+}
+async function showReq(id) {
+  SELECTED = id;
+  try { const d = await api('/api/admin/requests/' + id); document.getElementById('detail').innerHTML = renderLogDetail(d); loadList(); } catch (e) {}
+}
+async function clearAll() {
+  if (!confirm('Wirklich ALLE Requests aller User löschen?')) return;
+  await api('/api/admin/requests', { method: 'DELETE' }); SELECTED = null; renderLog();
+}
+
+if (TOKEN) login(TOKEN); else showLogin();
+</script>
+</body>
+</html>

@@ -174,3 +174,84 @@ Nach Änderungen: `docker compose up -d` (bzw. `--build` bei Code-Änderungen).
 | `docker compose logs` sagt "no configuration file" | Im falschen Verzeichnis → zuerst `cd ~/anonymizer` |
 | Harmloses Wort wird anonymisiert | In `.env`: `NER_IGNORE_WORDS=Wort1,Wort2` → `docker compose up -d` |
 | Browser lädt Seite nicht, curl geht | Browser erzwingt https → explizit `http://` eintippen |
+
+## 11. Multi-User-Betrieb (Unterricht)
+
+Anleitung für Studierende: [ANLEITUNG-STUDIERENDE.md](ANLEITUNG-STUDIERENDE.md)
+
+Mit `MULTI_USER=true` wird der Anonymizer zu einer Übungsplattform: Jede Person definiert im Web-UI ihre **eigene Guardrail**, erhält einen eigenen Key (`ano_…`) für Jan oder OpenWebUI und sieht im eigenen Dashboard, was beim LLM ankommt. Der eigentliche LLM-Key liegt nur auf dem Server.
+
+```
+Jan (Key ano_…) ──► Anonymizer (Guardrail der Person) ──► LiteLLM / OpenRouter (zentraler Key)
+                         │
+                         └─► Web-UI: Guardrail-Editor, Testfeld, eigene Requests
+```
+
+### 11.1 Was Studierende einstellen können
+
+| Baustein | Beschreibung |
+|---|---|
+| Eingebaute Erkennung | Typen ein/aus (E-Mail, Telefon, IBAN, AHV, …; Namen/Orte nur mit NER-Modell), Mindest-Score |
+| Eigene Regeln | Regex mit Name (z. B. `KUNDENNUMMER`) und Aktion: **maskieren** (Platzhalter, Antwort wird zurückübersetzt), **entfernen** (fester Ersatztext), **blockieren** (Request erreicht das LLM nie, Jan zeigt die Block-Meldung) |
+| Ausnahmen | Wörter, die nie maskiert werden |
+| Testfeld | zeigt live, was das LLM sehen würde, ohne das LLM aufzurufen |
+
+Bewusst **kein eigener Python-Code**: Regeln sind deklarativ, damit auf dem Server kein fremder Code läuft. Regex-Ausdrücke laufen mit Timeout (`GUARDRAIL_REGEX_TIMEOUT`, Standard 0,2 s); eine zu langsame Regel blockiert den Request (fail-closed).
+
+### 11.2 Konfiguration
+
+```dotenv
+MULTI_USER=true
+UPSTREAM_BASE_URL=https://litellm.example.ch/v1
+UPSTREAM_API_KEY=sk-…            # zentraler LiteLLM-Key (Team-Key, Key Type «AI APIs», mit Budget)
+ADMIN_TOKEN=<langes-zufallstoken>
+REGISTRATION_CODE=KURS-HS26      # leer = nur Admin legt User an
+ALLOWED_MODELS=azure_ai/gpt-oss-120b
+RATE_LIMIT_PER_MINUTE=30
+LOG_RETENTION_DAYS=14
+NER_ENGINE=none                  # leicht; "gliner" für Namen/Orte (ca. 2 GB RAM)
+```
+
+Alle Variablen: siehe `.env.example`. `FORWARD_USER=true` schickt `user: "anonymizer:<Name>"` an den Upstream, damit LiteLLM die Nutzung pro Person ausweist, obwohl alles über einen Key läuft.
+
+### 11.3 HTTPS (Pflicht)
+
+Keys und Prompts dürfen nicht unverschlüsselt übers Netz. Beispiel mit Caddy auf dem VPS (holt das Zertifikat automatisch):
+
+```
+# /etc/caddy/Caddyfile
+guard.example.ch {
+    reverse_proxy localhost:8800
+}
+```
+
+Danach Port 8800 in `ufw` und in der Cloud-Firewall des Hosters nach aussen schliessen; nur 80/443 offen lassen.
+
+### 11.4 Ablauf im Kurs
+
+1. Admin-UI unter `https://guard.example.ch/admin` öffnen (Admin-Token).
+2. Studierende registrieren sich unter `https://guard.example.ch/` mit Name und Kurs-Code. Der Key wird **einmal** angezeigt. Verlorene Keys erzeugt der Admin neu, die Guardrail bleibt erhalten.
+3. In Jan: OpenAI-kompatibler Provider, Base URL `https://guard.example.ch/v1`, API Key `ano_…`.
+4. Guardrail im Web-UI bauen, im Testfeld prüfen, speichern, in Jan chatten, im Tab «Meine Requests» vergleichen.
+
+### 11.5 Endpunkte
+
+| Pfad | Zugriff | Zweck |
+|---|---|---|
+| `POST /v1/chat/completions`, `GET /v1/models` | `ano_…`-Key | OpenAI-kompatibler Proxy |
+| `GET /api/info`, `POST /api/register` | offen (Registrierung nur mit Kurs-Code, 10 Versuche/h pro IP) | UI-Infos, Selbstregistrierung |
+| `/api/me`, `/api/me/guardrail`, `/api/me/preview`, `/api/me/requests` | `ano_…`-Key | eigene Guardrail und Logs |
+| `/api/admin/*` | `ADMIN_TOKEN` (Header `x-admin-token`) | User verwalten, alle Logs |
+
+Ohne `MULTI_USER` verhält sich alles wie bisher (Einzel-User-Proxy, Key-Durchreichung, Dashboard unter `/`).
+
+### 11.6 Datenschutz
+
+Die Logs enthalten die Originaleingaben im Klartext (sonst gäbe es keinen Vorher-/Nachher-Vergleich). Deshalb: nur erfundene Testdaten vorgeben, `LOG_RETENTION_DAYS` setzen, jede Person sieht nur ihre eigenen Requests, der Admin alle.
+
+### 11.7 Tests
+
+```bash
+python tests/test_multiuser.py                 # Multi-User, ohne NER-Modelle
+NER_ENGINE=spacy python tests/test_sandbox.py  # bisheriger Einzel-User-Test
+```
