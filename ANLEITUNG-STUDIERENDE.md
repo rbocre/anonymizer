@@ -23,11 +23,11 @@ Du siehst bei jeder Anfrage im Web-UI, was du eingegeben hast und was beim LLM t
 
 ## 1. Zugang erstellen
 
-1. Öffne **https://<ADRESSE>** (immer mit `https://`).
+1. Öffne die Adresse, die du im Unterricht erhältst (immer mit `https://`). Im Folgenden steht dafür `<ADRESSE>`.
 2. Unter «Neu hier? Zugang erstellen» deinen Namen und den **Kurs-Code** eingeben. Den Code erhältst du im Unterricht.
 3. Du erhältst einen persönlichen Key, der mit `ano_` beginnt.
    **Er wird nur ein einziges Mal angezeigt.** Kopiere ihn sofort und bewahre ihn sicher auf (z. B. im Passwort-Manager).
-4. Mit «Weiter» bist du angemeldet. Später meldest du dich mit diesem Key an.
+4. Mit «Weiter» meldest du dich an. Je nach Einstellung musst du warten, bis die Lehrperson deinen Zugang **freigegeben** hat. Bis dahin erscheint «Dein Zugang wartet auf Freigabe». Später meldest du dich mit diesem Key an.
 
 Key verloren? Die Lehrperson kann einen neuen erzeugen. Deine Guardrail bleibt dabei erhalten.
 
@@ -152,6 +152,7 @@ Regeln werden beim Speichern geprüft: Ein Muster, das auf einen leeren Text pas
 
 | Meldung oder Verhalten | Ursache | Lösung |
 |---|---|---|
+| «Dein Zugang wartet auf Freigabe» / 403 | Lehrperson hat den Zugang noch nicht freigegeben | kurz warten oder im Unterricht melden |
 | «Ungültiger oder fehlender API-Key» / 401 | falscher Key in Jan | in Jan den `ano_…`-Key prüfen, nicht einen anderen Key |
 | «Couldn't reach the provider» | Base URL falsch | `https://<ADRESSE>/v1` (mit `https` und `/v1`) |
 | «Zu viele Anfragen» / 429 | mehr als 30 Anfragen pro Minute | kurz warten |

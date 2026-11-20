@@ -71,6 +71,7 @@ async function register() {
     document.getElementById('view').innerHTML = `
       <div class="center"><div class="card"><h3>Dein Zugang ist bereit</h3>
         <p>Das ist dein persönlicher Key. <b>Er wird nur jetzt angezeigt</b>: kopiere ihn und bewahre ihn gut auf.</p>
+        ${r.pending ? '<div class="msgbox warn">Dein Zugang muss noch von der Lehrperson freigegeben werden. Danach kannst du dich mit diesem Key anmelden.</div>' : ''}
         <div class="keybox" id="newkey">${esc(r.key)}</div>
         <button onclick="copyText('${esc(r.key)}').then(ok => this.textContent = ok ? 'Kopiert ✓' : 'Bitte manuell kopieren')">Kopieren</button>
         <button class="primary" onclick="login('${esc(r.key)}')">Weiter</button>

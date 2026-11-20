@@ -63,7 +63,7 @@ async function renderUsers(keyMsg) {
     ${keyMsg || ''}
     <div class="card"><h3>User anlegen</h3>
       <input id="nname" placeholder="Name" maxlength="40"> <button class="primary" onclick="createUser()">Anlegen</button>
-      <span class="hint">Alternativ registrieren sich Studierende selbst mit dem Kurs-Code (REGISTRATION_CODE).</span>
+      <span class="hint">Alternativ registrieren sich Studierende selbst mit dem Kurs-Code; neue Zugänge erscheinen unten als «wartet auf Freigabe».</span>
     </div>
     <div class="card"><h3>User (${USERS.length})</h3>
       ${USERS.length ? `<table><tr><th>Name</th><th>Key</th><th>Erstellt</th><th>Zuletzt aktiv</th><th>Requests</th><th>Regeln</th><th>Status</th><th></th></tr>
@@ -72,9 +72,9 @@ async function renderUsers(keyMsg) {
           <td>${fmtTime(u.created)}</td><td>${fmtTime(u.last_used)}</td>
           <td><a href="#" onclick="FILTER='${u.id}'; showTab('log'); return false">${u.request_count}</a></td>
           <td>${(u.config?.rules || []).length}</td>
-          <td>${u.active ? '<span class="badge ok">aktiv</span>' : '<span class="badge error">gesperrt</span>'}</td>
+          <td>${u.active ? '<span class="badge ok">aktiv</span>' : (u.last_used ? '<span class="badge error">gesperrt</span>' : '<span class="badge pending">wartet auf Freigabe</span>')}</td>
           <td style="white-space:nowrap">
-            <button onclick="setActive('${u.id}', ${!u.active})">${u.active ? 'Sperren' : 'Entsperren'}</button>
+            <button ${u.active ? '' : 'class="primary"'} onclick="setActive('${u.id}', ${!u.active})">${u.active ? 'Sperren' : (u.last_used ? 'Entsperren' : 'Freigeben')}</button>
             <button onclick="regen('${u.id}')">Neuer Key</button>
             <button class="danger" onclick="delUser('${u.id}')">Löschen</button>
           </td></tr>`).join('')}</table>` : '<p class="empty">Noch keine User.</p>'}

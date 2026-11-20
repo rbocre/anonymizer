@@ -90,15 +90,15 @@ def _user_dict(row) -> dict:
     return d
 
 
-def create_user(name: str, config: dict | None = None) -> tuple[dict, str]:
+def create_user(name: str, config: dict | None = None, active: bool = True) -> tuple[dict, str]:
     """Legt einen User an. Gibt (User, Klartext-Key) zurück; der Key wird nur
     gehasht gespeichert und ist danach nicht mehr abrufbar."""
     key = _new_key()
     uid = uuid.uuid4().hex[:12]
     try:
         _conn().execute(
-            "INSERT INTO users (id, name, created, key_hash, key_hint, config)"
-            " VALUES (?,?,?,?,?,?)",
+            "INSERT INTO users (id, name, created, key_hash, key_hint, config, active)"
+            " VALUES (?,?,?,?,?,?,?)",
             (
                 uid,
                 name,
@@ -106,6 +106,7 @@ def create_user(name: str, config: dict | None = None) -> tuple[dict, str]:
                 _hash_key(key),
                 key[:8] + "…" + key[-4:],
                 json.dumps(config, ensure_ascii=False) if config else None,
+                int(active),
             ),
         )
         _conn().commit()

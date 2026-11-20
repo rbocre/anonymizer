@@ -54,6 +54,8 @@ UPSTREAM_API_KEY = os.getenv("UPSTREAM_API_KEY") or os.getenv("OPENROUTER_API_KE
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or os.getenv("DASHBOARD_TOKEN", "")
 MULTI_USER = _env_bool("MULTI_USER", False)
 REGISTRATION_CODE = os.getenv("REGISTRATION_CODE", "")
+# Selbst registrierte Zugänge erst nach Freigabe im Admin-UI aktiv
+REGISTRATION_APPROVAL = _env_bool("REGISTRATION_APPROVAL", True)
 FORWARD_USER = _env_bool("FORWARD_USER", True)
 RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "30"))
 LOG_RETENTION_DAYS = float(os.getenv("LOG_RETENTION_DAYS", "0"))
@@ -146,7 +148,10 @@ def _require_user(request: Request) -> dict:
     if not user:
         raise HTTPException(status_code=401, detail="Ungültiger oder fehlender API-Key (ano_…).")
     if not user["active"]:
-        raise HTTPException(status_code=403, detail="Dieser Zugang ist deaktiviert.")
+        raise HTTPException(
+            status_code=403,
+            detail="Dein Zugang wartet auf Freigabe durch die Lehrperson oder ist gesperrt.",
+        )
     return user
 
 
@@ -390,6 +395,7 @@ async def api_info():
     return {
         "multi_user": MULTI_USER,
         "registration_open": MULTI_USER and bool(REGISTRATION_CODE),
+        "registration_approval": REGISTRATION_APPROVAL,
         "ner_engine": NER_ENGINE,
         "ner_available": ner_available(),
         "entities": [
@@ -428,10 +434,10 @@ async def api_register(request: Request):
     if not 2 <= len(name) <= 40:
         raise HTTPException(status_code=400, detail="Name muss 2–40 Zeichen lang sein.")
     try:
-        user, key = store.create_user(name, default_config())
+        user, key = store.create_user(name, default_config(), active=not REGISTRATION_APPROVAL)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
-    return {"user": _public_user(user), "key": key}
+    return {"user": _public_user(user), "key": key, "pending": REGISTRATION_APPROVAL}
 
 
 def _public_user(u: dict) -> dict:
