@@ -16,6 +16,7 @@ os.environ.update(
         "UPSTREAM_API_KEY": "sk-central-secret",
         "ADMIN_TOKEN": "admin-test",
         "REGISTRATION_CODE": "KURS26",
+        "REGISTRATION_APPROVAL": "true",
         "RATE_LIMIT_PER_MINUTE": "100",
     }
 )
@@ -82,7 +83,15 @@ async def test_multiuser_flow():
         r = await c.post("/api/register", json={"name": "Anna", "code": "KURS26"})
         assert r.status_code == 200, r.text
         key_a = r.json()["key"]
-        assert key_a.startswith("ano_")
+        assert key_a.startswith("ano_") and r.json()["pending"] is True
+        # Freigabe durch Admin nötig
+        r = await c.get("/api/me", headers={"Authorization": f"Bearer {key_a}"})
+        assert r.status_code == 403 and "Freigabe" in r.json()["detail"]
+        anna_id = (await c.get("/api/admin/users", headers={"x-admin-token": "admin-test"})).json()[0]["id"]
+        await c.patch(f"/api/admin/users/{anna_id}", json={"active": True},
+                      headers={"x-admin-token": "admin-test"})
+        r = await c.get("/api/me", headers={"Authorization": f"Bearer {key_a}"})
+        assert r.status_code == 200, "nach Freigabe aktiv"
         r = await c.post("/api/register", json={"name": "anna", "code": "KURS26"})
         assert r.status_code == 409, "Name doppelt (case-insensitive)"
         r = await c.post(

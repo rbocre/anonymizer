@@ -206,6 +206,7 @@ UPSTREAM_BASE_URL=https://litellm.example.ch/v1
 UPSTREAM_API_KEY=sk-…            # zentraler LiteLLM-Key (Team-Key, Key Type «AI APIs», mit Budget)
 ADMIN_TOKEN=<langes-zufallstoken>
 REGISTRATION_CODE=KURS-HS26      # leer = nur Admin legt User an
+REGISTRATION_APPROVAL=true       # neue Zugänge erst nach Freigabe in /admin aktiv
 ALLOWED_MODELS=azure_ai/gpt-oss-120b
 RATE_LIMIT_PER_MINUTE=30
 LOG_RETENTION_DAYS=14
@@ -230,7 +231,7 @@ Danach Port 8800 in `ufw` und in der Cloud-Firewall des Hosters nach aussen schl
 ### 11.4 Ablauf im Kurs
 
 1. Admin-UI unter `https://guard.example.ch/admin` öffnen (Admin-Token).
-2. Studierende registrieren sich unter `https://guard.example.ch/` mit Name und Kurs-Code. Der Key wird **einmal** angezeigt. Verlorene Keys erzeugt der Admin neu, die Guardrail bleibt erhalten.
+2. Studierende registrieren sich unter `https://guard.example.ch/` mit Name und Kurs-Code. Der Key wird **einmal** angezeigt. Mit `REGISTRATION_APPROVAL=true` gibst du jeden neuen Zugang unter `/admin` mit «Freigeben» frei. Verlorene Keys erzeugt der Admin neu, die Guardrail bleibt erhalten.
 3. In Jan: OpenAI-kompatibler Provider, Base URL `https://guard.example.ch/v1`, API Key `ano_…`.
 4. Guardrail im Web-UI bauen, im Testfeld prüfen, speichern, in Jan chatten, im Tab «Meine Requests» vergleichen.
 
