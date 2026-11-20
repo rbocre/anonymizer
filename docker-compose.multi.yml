@@ -1,0 +1,19 @@
+# Zweite, unabhängige Instanz für den Multi-User-Betrieb (Unterricht).
+# Läuft parallel zur bestehenden Instanz: eigener Container, eigenes Volume,
+# eigener Port (nur lokal gebunden; Zugriff per SSH-Tunnel oder Caddy).
+#
+#   docker compose -p anonymizer-multi -f docker-compose.multi.yml up -d --build
+services:
+  anonymizer-multi:
+    build: .
+    container_name: anonymizer-multi
+    ports:
+      - "127.0.0.1:8801:8800"
+    env_file:
+      - .env
+    volumes:
+      - anonymizer-multi-data:/data
+    restart: unless-stopped
+
+volumes:
+  anonymizer-multi-data:
